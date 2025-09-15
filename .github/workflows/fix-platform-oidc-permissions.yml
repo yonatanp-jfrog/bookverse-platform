@@ -1,0 +1,186 @@
+name: Fix Platform OIDC Permissions
+
+# Workflow to fix the HTTP 403 authorization issue by expanding 
+# platform OIDC provider permissions to include all service applications
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run mode (preview changes without applying)'
+        required: false
+        default: false
+        type: boolean
+      reason:
+        description: 'Reason for running OIDC permissions fix'
+        required: false
+        default: 'Fix HTTP 403 authorization for platform aggregation'
+        type: string
+
+jobs:
+  fix-oidc-permissions:
+    name: 🔧 Fix Platform OIDC Permissions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_KEY: ${{ vars.PROJECT_KEY }}
+      JFROG_URL: ${{ vars.JFROG_URL }}
+      ORG: ${{ vars.ORG || 'yonatanp-jfrog' }}
+    steps:
+      - name: "[Setup] Checkout"
+        uses: actions/checkout@v4
+
+      - name: "[Auth] Get Admin Token via OIDC"
+        env:
+          JF_URL: ${{ vars.JFROG_URL }}
+          PROJECT: ${{ vars.PROJECT_KEY }}
+          PROVIDER_NAME: bookverse-platform-github
+        run: |
+          set -euo pipefail
+          
+          echo "🔐 Authenticating platform for OIDC management operations"
+          
+          # Install jq if needed
+          if ! command -v jq >/dev/null 2>&1; then 
+            sudo apt-get update -y && sudo apt-get install -y jq
+          fi
+          
+          # Get OIDC token
+          if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
+            echo "❌ Missing GitHub OIDC request env vars" >&2
+            exit 1
+          fi
+          
+          echo "🔄 Minting GitHub OIDC ID token..."
+          GH_ID_TOKEN=$(curl -sS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${JF_URL}" | jq -r .value)
+          
+          if [[ -z "$GH_ID_TOKEN" || "$GH_ID_TOKEN" == "null" ]]; then 
+            echo "❌ Failed to fetch GitHub ID token" >&2
+            exit 1
+          fi
+          
+          # Exchange for JFrog access token
+          echo "🔄 Exchanging for JFrog access token..."
+          PAYLOAD=$(jq -n --arg jwt "$GH_ID_TOKEN" \
+            --arg provider_name "$PROVIDER_NAME" \
+            --arg project_key "$PROJECT" \
+            --arg job_id "${{ github.job }}" \
+            --arg run_id "${{ github.run_id }}" \
+            --arg repo "https://github.com/${{ github.repository }}" \
+            --arg revision "${{ github.sha }}" \
+            --arg branch "${{ github.ref_name }}" \
+            '{
+              grant_type:"urn:ietf:params:oauth:grant-type:token-exchange",
+              subject_token_type:"urn:ietf:params:oauth:token-type:id_token",
+              subject_token:$jwt,
+              provider_name:$provider_name,
+              project_key:$project_key,
+              job_id:$job_id,
+              run_id:$run_id,
+              repo:$repo,
+              revision:$revision,
+              branch:$branch
+            }')
+          
+          TOKEN=$(curl -sS -X POST -H "Content-Type: application/json" -d "$PAYLOAD" \
+            "$JF_URL/access/api/v1/oidc/token" | jq -r .access_token)
+          
+          if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then 
+            echo "❌ Failed to exchange OIDC token" >&2
+            exit 1
+          fi
+          
+          echo "JFROG_ADMIN_TOKEN=$TOKEN" >> $GITHUB_ENV
+          echo "✅ Platform authentication successful"
+
+      - name: "[Analysis] Check Current OIDC Configuration"
+        run: |
+          echo "🔍 Analyzing current platform OIDC configuration"
+          echo "Integration: bookverse-platform-github"
+          echo ""
+          
+          # List current identity mappings
+          RESP=$(curl -sS -H "Authorization: Bearer ${JFROG_ADMIN_TOKEN}" \
+            -H "Accept: application/json" \
+            "${JFROG_URL}/access/api/v1/oidc/bookverse-platform-github/identity_mappings" || echo '[]')
+          
+          echo "📋 Current identity mappings:"
+          echo "$RESP" | jq -r '.[]? | "  - Name: " + .name + "\n    Repo: " + (.claims.repository // "N/A") + "\n    Scope: " + (.token_spec.scope // "N/A") + "\n"' || echo "No mappings found"
+          
+          # Check if cross-service access exists
+          if echo "$RESP" | jq -e '.[]? | select(.claims.repository | test("bookverse-\\*$"))' >/dev/null 2>&1; then
+            echo "✅ Cross-service access already configured"
+            echo "CROSS_SERVICE_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "❌ Cross-service access not found - this explains the HTTP 403 errors"
+            echo "CROSS_SERVICE_EXISTS=false" >> $GITHUB_ENV
+          fi
+
+      - name: "[Fix] Apply OIDC Permissions Expansion"
+        if: env.CROSS_SERVICE_EXISTS == 'false'
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "🔍 DRY RUN MODE: Would apply OIDC permissions expansion"
+            echo "This would create cross-service identity mappings for platform access"
+            exit 0
+          fi
+          
+          echo "🔧 Applying OIDC permissions expansion..."
+          chmod +x scripts/expand-platform-oidc-permissions.sh
+          ./scripts/expand-platform-oidc-permissions.sh
+
+      - name: "[Validation] Test Platform API Access"
+        if: env.CROSS_SERVICE_EXISTS == 'false' && inputs.dry_run == false
+        run: |
+          echo "🧪 Testing platform API access to service applications"
+          
+          # Test access to bookverse-inventory application
+          echo "Testing access to bookverse-inventory..."
+          RESP=$(curl -sS -H "Authorization: Bearer ${JFROG_ADMIN_TOKEN}" \
+            -H "Accept: application/json" \
+            "${JFROG_URL}/apptrust/api/v1/applications/bookverse-inventory/versions?limit=1" || echo '{"error": "failed"}')
+          
+          if echo "$RESP" | jq -e '.versions' >/dev/null 2>&1; then
+            echo "✅ Successfully accessed bookverse-inventory application"
+            VERSION_COUNT=$(echo "$RESP" | jq '.versions | length')
+            echo "   Found $VERSION_COUNT versions"
+          elif echo "$RESP" | jq -e '.error' >/dev/null 2>&1; then
+            echo "❌ Still getting access errors - may need additional configuration"
+            echo "Response: $RESP"
+          else
+            echo "⚠️  Unexpected response format"
+            echo "Response: $RESP"
+          fi
+
+      - name: "[Summary] OIDC Permissions Fix Results"
+        run: |
+          echo "🏁 OIDC Permissions Fix Summary"
+          echo "================================"
+          echo "Project: $PROJECT_KEY"
+          echo "OIDC Provider: bookverse-platform-github"
+          echo "Reason: ${{ inputs.reason }}"
+          echo "Dry Run: ${{ inputs.dry_run }}"
+          echo ""
+          
+          if [[ "${{ env.CROSS_SERVICE_EXISTS }}" == "true" ]]; then
+            echo "✅ Cross-service access was already configured"
+            echo "   The HTTP 403 issue may have a different root cause"
+          elif [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            echo "🔍 Dry run completed - no changes applied"
+            echo "   Run without dry_run to apply the fix"
+          else
+            echo "🔧 OIDC permissions expansion applied"
+            echo "   Platform should now have access to all service applications"
+            echo "   This should resolve HTTP 403 errors in platform aggregation"
+          fi
+          
+          echo ""
+          echo "🎯 Next Steps:"
+          echo "   1. Re-run platform aggregation workflow"
+          echo "   2. Verify that HTTP 403 errors are resolved"
+          echo "   3. Monitor platform access to service applications"

@@ -1,5 +1,12 @@
 # BookVerse Core Library (includes fastapi, uvicorn, pydantic, python-jose, requests, PyYAML)
-bookverse-core>=0.1.0
+# TODO: Use published package when available: bookverse-core>=0.1.0
+# For now, install individual dependencies for testing
+fastapi==0.100.0
+uvicorn[standard]==0.30.0
+pydantic==2.11.9
+python-jose[cryptography]>=3.2.0
+requests==2.31.0
+PyYAML>=6.0.1
 
 # Additional platform-specific dependencies
 httpx==0.27.0

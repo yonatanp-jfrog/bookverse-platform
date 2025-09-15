@@ -1,0 +1,172 @@
+name: Test Platform Migration
+
+# Simple workflow to test our platform migration changes
+on:
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Type of test to run'
+        required: false
+        default: 'basic'
+        type: choice
+        options:
+          - basic
+          - auth
+          - aggregator
+          - full
+
+jobs:
+  test-shared-auth:
+    name: Test Shared Authentication
+    uses: ./.github/workflows/shared-platform-auth.yml
+    with:
+      service-name: 'test-migration'
+      setup-python: true
+      install-dependencies: true
+      setup-apptrust: true
+
+  test-platform-functionality:
+    name: Test Platform Functionality
+    needs: test-shared-auth
+    runs-on: ubuntu-latest
+    steps:
+      - name: "[Setup] Checkout"
+        uses: actions/checkout@v4
+
+      - name: "[Test] Validate Migration Success"
+        run: |
+          echo "🎯 Testing Platform Migration"
+          echo "✅ Shared auth status: ${{ needs.test-shared-auth.outputs.auth-status }}"
+          
+          # Test that embedded libs are removed
+          if [ -d "libs/bookverse-core" ]; then
+            echo "❌ ERROR: Embedded libs still exist!"
+            exit 1
+          else
+            echo "✅ Embedded libs successfully removed"
+          fi
+          
+          # Test requirements.txt contains bookverse-core
+          if grep -q "bookverse-core" requirements.txt; then
+            echo "✅ Published bookverse-core package in requirements"
+          else
+            echo "❌ ERROR: bookverse-core package not found in requirements"
+            exit 1
+          fi
+          
+          # Test workflow files
+          if [ -f ".github/workflows/shared-platform-auth.yml" ]; then
+            echo "✅ Shared authentication workflow exists"
+          else
+            echo "❌ ERROR: Shared auth workflow missing"
+            exit 1
+          fi
+          
+          echo "🎉 Platform migration validation successful!"
+
+  test-module-imports:
+    name: Test Module Imports
+    needs: test-shared-auth
+    runs-on: ubuntu-latest
+    if: ${{ inputs.test_type == 'full' || inputs.test_type == 'basic' }}
+    steps:
+      - name: "[Setup] Checkout"
+        uses: actions/checkout@v4
+
+      - name: "[Setup] Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: "[Setup] Install Dependencies"
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: "[Test] Module Imports"
+        run: |
+          echo "🧪 Testing Platform Module Imports"
+          
+          # Test bookverse-core imports
+          python -c "
+          from bookverse_core.auth import AuthUser, validate_jwt_token
+          from bookverse_core.utils import get_logger
+          print('✅ bookverse-core imports successful')
+          "
+          
+          # Test platform modules
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from app import auth, main, tagging_service
+          print('✅ Platform modules import successful')
+          "
+          
+          echo "🎉 All module imports successful!"
+
+  test-aggregator-logic:
+    name: Test Aggregator Logic
+    needs: test-shared-auth
+    runs-on: ubuntu-latest
+    if: ${{ inputs.test_type == 'aggregator' || inputs.test_type == 'full' }}
+    steps:
+      - name: "[Setup] Checkout"
+        uses: actions/checkout@v4
+
+      - name: "[Setup] Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: "[Setup] Install Dependencies"
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: "[Test] Platform Aggregator"
+        run: |
+          echo "🧪 Testing Platform Aggregator Logic"
+          
+          # Test configuration loading
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from app.main import load_services_config, parse_args
+          from pathlib import Path
+          
+          config_path = Path('config/services.yaml')
+          services = load_services_config(config_path)
+          print(f'✅ Loaded {len(services)} services from config')
+          
+          args = parse_args()
+          print('✅ Argument parsing works')
+          "
+          
+          echo "🎉 Platform aggregator logic test successful!"
+
+  summary:
+    name: Migration Test Summary
+    needs: [test-shared-auth, test-platform-functionality, test-module-imports, test-aggregator-logic]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: "[Summary] Test Results"
+        run: |
+          echo "🏁 Platform Migration Test Summary"
+          echo "=================================="
+          echo "Shared Auth: ${{ needs.test-shared-auth.result }}"
+          echo "Platform Functionality: ${{ needs.test-platform-functionality.result }}"
+          echo "Module Imports: ${{ needs.test-module-imports.result }}"
+          echo "Aggregator Logic: ${{ needs.test-aggregator-logic.result }}"
+          
+          if [[ "${{ needs.test-shared-auth.result }}" == "success" && 
+                "${{ needs.test-platform-functionality.result }}" == "success" ]]; then
+            echo "🎉 PLATFORM MIGRATION SUCCESSFUL!"
+            echo "✅ Core functionality validated"
+            echo "✅ Shared workflows working"
+            echo "✅ Infrastructure approach functional"
+          else
+            echo "⚠️ Some tests failed - check individual job results"
+          fi

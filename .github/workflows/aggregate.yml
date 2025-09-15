@@ -67,14 +67,15 @@ jobs:
 
       # Note: Python, dependencies, and AppTrust context are set up by shared workflow
       
-      - name: "[Debug] Test OIDC Permissions Before Aggregation"
+      - name: "[Fix] Apply OIDC Permissions Expansion"
         env:
           JFROG_ADMIN_TOKEN: ${{ needs.authenticate.outputs.oidc-token }}
           PROJECT_KEY: ${{ vars.PROJECT_KEY }}
+          ORG: ${{ vars.ORG || 'yonatanp-jfrog' }}
         run: |
-          echo "🔍 Testing OIDC permissions before platform aggregation..."
-          chmod +x test-oidc-fix.sh
-          ./test-oidc-fix.sh || true
+          echo "🔧 Applying OIDC permissions expansion to fix HTTP 403 authorization..."
+          chmod +x scripts/expand-platform-oidc-permissions.sh
+          ./scripts/expand-platform-oidc-permissions.sh
           echo ""
       
       - name: "[Setup] JFrog CLI"

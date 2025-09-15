@@ -7,8 +7,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 COPY requirements.txt ./
-COPY libs libs
-RUN pip install --no-cache-dir ./libs/bookverse-core
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app

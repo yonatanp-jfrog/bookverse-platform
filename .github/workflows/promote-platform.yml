@@ -15,67 +15,42 @@ on:
         options: [ DEV, QA, STAGING ]
 
 jobs:
+  # Use shared authentication workflow  
+  authenticate:
+    name: "Platform Authentication"
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/shared-platform-auth.yml
+    with:
+      service-name: "promotion"
+      setup-python: true
+      python-version: "3.11"
+      install-dependencies: false  # Promotion doesn't need dependencies
+      setup-apptrust: true
+
   promote:
     name: Promote
+    needs: authenticate
     runs-on: ubuntu-latest
     defaults:
       run:
         shell: bash
-    permissions:
-      contents: read
-      id-token: write
+    env:
+      # Use tokens from shared authentication workflow
+      JFROG_URL: ${{ vars.JFROG_URL }}
+      JF_OIDC_TOKEN: ${{ needs.authenticate.outputs.oidc-token }}
+      APPTRUST_BASE_URL: ${{ needs.authenticate.outputs.apptrust-base-url }}
+      APPTRUST_ACCESS_TOKEN: ${{ needs.authenticate.outputs.oidc-token }}
     steps:
       - name: "[Setup] Checkout"
         uses: actions/checkout@v4
 
-      - name: "[Setup] Python"
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: "[Auth] Persist JF access token (OIDC → JFrog)"
-        env:
-          JF_URL: ${{ vars.JFROG_URL }}
-          PROJECT: ${{ vars.PROJECT_KEY }}
-          PROVIDER_NAME: bookverse-platform-github
-        run: |
-          set -euo pipefail
-          if ! command -v jq >/dev/null 2>&1; then sudo apt-get update -y && sudo apt-get install -y jq; fi
-          if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
-            echo "❌ Missing GitHub OIDC request env vars" >&2; exit 1; fi
-          GH_ID_TOKEN=$(curl -sS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${JF_URL}" | jq -r .value)
-          if [[ -z "$GH_ID_TOKEN" || "$GH_ID_TOKEN" == "null" ]]; then echo "❌ Failed to fetch GitHub ID token" >&2; exit 1; fi
-          PAYLOAD=$(jq -n --arg jwt "$GH_ID_TOKEN" \
-            --arg provider_name "$PROVIDER_NAME" \
-            --arg project_key "$PROJECT" \
-            --arg job_id "${{ github.job }}" \
-            --arg run_id "${{ github.run_id }}" \
-            --arg repo "https://github.com/${{ github.repository }}" \
-            --arg revision "${{ github.sha }}" \
-            --arg branch "${{ github.ref_name }}" \
-            '{
-              grant_type:"urn:ietf:params:oauth:grant-type:token-exchange",
-              subject_token_type:"urn:ietf:params:oauth:token-type:id_token",
-              subject_token:$jwt,
-              provider_name:$provider_name,
-              project_key:$project_key,
-              job_id:$job_id,
-              run_id:$run_id,
-              repo:$repo,
-              revision:$revision,
-              branch:$branch
-            }')
-          TOKEN=$(curl -sS -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$JF_URL/access/api/v1/oidc/token" | jq -r .access_token)
-          if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then echo "❌ Failed to exchange OIDC token" >&2; exit 1; fi
-          echo "JF_OIDC_TOKEN=$TOKEN" >> $GITHUB_ENV
+      # Note: Python and authentication are set up by shared workflow
 
       - name: "[Promote] AppTrust"
         id: promote
         env:
-          JFROG_URL: ${{ vars.JFROG_URL }}
-          JF_OIDC_TOKEN: ${{ env.JF_OIDC_TOKEN }}
           PROJECT_KEY: ${{ vars.PROJECT_KEY }}
         run: |
           python - << 'PY'

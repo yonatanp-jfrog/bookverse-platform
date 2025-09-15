@@ -34,77 +34,39 @@ on:
         type: string
 
 jobs:
+  # Use shared authentication workflow
+  authenticate:
+    name: "Platform Authentication"
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/shared-platform-auth.yml
+    with:
+      service-name: "aggregator"
+      setup-python: true
+      python-version: "3.11"
+      install-dependencies: true
+      setup-apptrust: true
+
   aggregate:
     name: Aggregate
+    needs: authenticate
     runs-on: ubuntu-latest
     defaults:
       run:
         shell: bash
-    permissions:
-      contents: read
-      id-token: write
     env:
-      # Prefer canonical JFrog variables used across the repo
+      # Use tokens from shared authentication workflow
       JFROG_URL: ${{ vars.JFROG_URL }}
+      JF_OIDC_TOKEN: ${{ needs.authenticate.outputs.oidc-token }}
+      APPTRUST_BASE_URL: ${{ needs.authenticate.outputs.apptrust-base-url }}
+      APPTRUST_ACCESS_TOKEN: ${{ needs.authenticate.outputs.oidc-token }}
     steps:
       - name: "[Setup] Checkout"
         uses: actions/checkout@v4
 
-      - name: "[Setup] Python"
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: "[Auth] Persist JF access token (OIDC → JFrog)"
-        env:
-          JF_URL: ${{ vars.JFROG_URL }}
-          PROJECT: ${{ vars.PROJECT_KEY }}
-          PROVIDER_NAME: bookverse-platform-github
-        run: |
-          set -euo pipefail
-          if ! command -v jq >/dev/null 2>&1; then sudo apt-get update -y && sudo apt-get install -y jq; fi
-          if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
-            echo "❌ Missing GitHub OIDC request env vars" >&2; exit 1; fi
-          GH_ID_TOKEN=$(curl -sS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${JF_URL}" | jq -r .value)
-          if [[ -z "$GH_ID_TOKEN" || "$GH_ID_TOKEN" == "null" ]]; then echo "❌ Failed to fetch GitHub ID token" >&2; exit 1; fi
-          PAYLOAD=$(jq -n --arg jwt "$GH_ID_TOKEN" \
-            --arg provider_name "$PROVIDER_NAME" \
-            --arg project_key "$PROJECT" \
-            --arg job_id "${{ github.job }}" \
-            --arg run_id "${{ github.run_id }}" \
-            --arg repo "https://github.com/${{ github.repository }}" \
-            --arg revision "${{ github.sha }}" \
-            --arg branch "${{ github.ref_name }}" \
-            '{
-              grant_type:"urn:ietf:params:oauth:grant-type:token-exchange",
-              subject_token_type:"urn:ietf:params:oauth:token-type:id_token",
-              subject_token:$jwt,
-              provider_name:$provider_name,
-              project_key:$project_key,
-              job_id:$job_id,
-              run_id:$run_id,
-              repo:$repo,
-              revision:$revision,
-              branch:$branch
-            }')
-          TOKEN=$(curl -sS -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$JF_URL/access/api/v1/oidc/token" | jq -r .access_token)
-          if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then echo "❌ Failed to exchange OIDC token" >&2; exit 1; fi
-          echo "JF_OIDC_TOKEN=$TOKEN" >> $GITHUB_ENV
-
-      - name: "[Setup] Install dependencies"
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      # AppTrust base URL is derived from JFROG_URL; use OIDC-minted access token for API calls
-      - name: "[Setup] AppTrust context"
-        run: |
-          BASE="${JFROG_URL%/}"
-          echo "APPTRUST_BASE_URL=${BASE}/apptrust/api/v1" >> "$GITHUB_ENV"
-          echo "APPTRUST_ACCESS_TOKEN=${JF_OIDC_TOKEN}" >> "$GITHUB_ENV"
-
+      # Note: Python, dependencies, and AppTrust context are set up by shared workflow
+      
       - name: "[Setup] JFrog CLI"
         uses: jfrog/setup-jfrog-cli@v4
         with:
@@ -112,6 +74,7 @@ jobs:
 
       - name: "[Setup] Configure JFrog CLI"
         run: |
+          echo "🔗 Using shared authentication token from previous job"
           jf c add --interactive=false --url "$JFROG_URL" --access-token "$JF_OIDC_TOKEN"
           jf c show
 

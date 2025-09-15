@@ -46,101 +46,39 @@ on:
         type: string
 
 jobs:
+  # Use shared authentication workflow
+  authenticate:
+    name: "Platform Authentication"
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/shared-platform-auth.yml
+    with:
+      service-name: "aggregate-promote"
+      setup-python: true
+      python-version: "3.11"
+      install-dependencies: true
+      setup-apptrust: true
+
   aggregate:
     name: "Platform Aggregation"
+    needs: authenticate
     runs-on: ubuntu-latest
     outputs:
       platform_version: ${{ steps.create-version.outputs.platform_version }}
       manifest_created: ${{ steps.create-version.outputs.manifest_created }}
-      build_name: ${{ steps.setup-build.outputs.build_name }}
-      build_number: ${{ steps.setup-build.outputs.build_number }}
     defaults:
       run:
         shell: bash
-    permissions:
-      contents: read
-      id-token: write
+    env:
+      # Use tokens from shared authentication workflow
+      APPTRUST_BASE_URL: ${{ needs.authenticate.outputs.apptrust-base-url }}
+      APPTRUST_ACCESS_TOKEN: ${{ needs.authenticate.outputs.oidc-token }}
     steps:
       - name: "[Setup] Checkout"
         uses: actions/checkout@v4
 
-      - name: "[Setup] JFrog CLI"
-        uses: jfrog/setup-jfrog-cli@v4
-        env:
-          JF_URL: ${{ vars.JFROG_URL }}
-          JF_PROJECT: ${{ vars.PROJECT_KEY }}
-        with:
-          version: latest
-          oidc-provider-name: bookverse-platform-github
-          disable-job-summary: true
-          oidc-audience: ${{ vars.JFROG_URL }}
-
-      - name: "[Setup] Build Info"
-        id: setup-build
-        run: |
-          BUILD_NAME="${{ github.event.repository.name }}_${{ github.workflow }}_${{ github.job }}"
-          BUILD_NUMBER="${{ github.run_number }}-${{ github.run_attempt }}"
-          echo "build_name=$BUILD_NAME" >> $GITHUB_OUTPUT
-          echo "build_number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
-          echo "BUILD_NAME=$BUILD_NAME" >> $GITHUB_ENV
-          echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_ENV
-          echo "✅ Build info: $BUILD_NAME#$BUILD_NUMBER"
-
-      - name: "[Auth] Exchange GitHub OIDC for JFrog access token"
-        id: exchange-oidc
-        run: |
-          set -euo pipefail
-          BASE="${{ vars.JFROG_URL }}"; BASE="${BASE%/}"
-          if [[ -z "$BASE" ]]; then echo "Missing vars.JFROG_URL" >&2; exit 1; fi
-          PROVIDER_NAME="bookverse-platform-github"
-          # Mint GitHub OIDC ID token with audience = JFrog URL (align with CI workflow)
-          JF_URL="$BASE"
-          if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
-            echo "❌ Missing GitHub OIDC request env vars" >&2; exit 1; fi
-          echo "🔑 Minting GitHub OIDC ID token (audience=$JF_URL)"
-          ID_TOKEN=$(curl -fsSL -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${JF_URL}" | jq -r .value)
-          if [[ -z "$ID_TOKEN" || "$ID_TOKEN" == "null" ]]; then echo "❌ Failed to fetch GitHub ID token" >&2; exit 1; fi
-          echo "🔁 Exchanging OIDC for JFrog access token (provider=$PROVIDER_NAME)"
-          PAYLOAD=$(jq -n --arg jwt "$ID_TOKEN" \
-            --arg provider_name "$PROVIDER_NAME" \
-            --arg project_key "${{ vars.PROJECT_KEY }}" \
-            --arg job_id "${{ github.job }}" \
-            '{
-              "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
-              "subject_token_type": "urn:ietf:params:oauth:token-type:id_token", 
-              "subject_token": $jwt,
-              "provider_name": $provider_name,
-              "project_key": $project_key
-            }')
-          RESPONSE=$(curl -fsSL -X POST "$BASE/access/api/v1/oidc/token" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD")
-          JF_ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // empty')
-          if [[ -z "$JF_ACCESS_TOKEN" ]]; then
-            echo "❌ Failed to exchange OIDC token" >&2
-            echo "Response: $RESPONSE" >&2
-            exit 1
-          fi
-          echo "token=$JF_ACCESS_TOKEN" >> $GITHUB_OUTPUT
-          echo "✅ Successfully exchanged OIDC token for JFrog access"
-
-      - name: "[Setup] Python"
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: "[Setup] Install dependencies"
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: "[Setup] AppTrust context"
-        run: |
-          BASE="${{ vars.JFROG_URL }}"
-          BASE="${BASE%/}"
-          echo "APPTRUST_BASE_URL=${BASE}/apptrust/api/v1" >> "$GITHUB_ENV"
-          echo "APPTRUST_ACCESS_TOKEN=${{ steps.exchange-oidc.outputs.token }}" >> "$GITHUB_ENV"
+      # Note: Python, dependencies, and authentication are set up by shared workflow
 
       - name: "[Run] Create version and write manifest"
         id: collect-versions
@@ -168,19 +106,15 @@ jobs:
           echo "manifest_created=true" >> $GITHUB_OUTPUT
           echo "✅ Platform application version created: $PLATFORM_VERSION"
 
-      - name: "[Build Info] Publish"
-        run: |
-          jf rt bag --project "${{ vars.PROJECT_KEY }}" "$BUILD_NAME" "$BUILD_NUMBER"
-          jf rt bce --project "${{ vars.PROJECT_KEY }}" "$BUILD_NAME" "$BUILD_NUMBER"
-          jf rt bp --project "${{ vars.PROJECT_KEY }}" "$BUILD_NAME" "$BUILD_NUMBER"
-          echo "✅ Published build info: $BUILD_NAME#$BUILD_NUMBER"
+      # Note: Platform aggregator doesn't publish build info
+      # It only creates platform application versions via AppTrust API
 
       - name: "[Summary] Aggregation"
         run: |
           echo "## 🏗️ Platform Aggregation Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Platform Version:** \`${{ steps.create-version.outputs.platform_version }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Build:** \`$BUILD_NAME#$BUILD_NUMBER\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Workflow:** \`${{ github.workflow }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📋 Details" >> $GITHUB_STEP_SUMMARY
           echo "- Platform aggregation completed successfully" >> $GITHUB_STEP_SUMMARY
@@ -255,21 +189,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: "[Setup] JFrog CLI"
-        uses: jfrog/setup-jfrog-cli@v4
-        with:
-          version: latest
-
-      - name: "[Setup] Configure JFrog CLI"
-        run: |
-          jf c add --interactive=false --url "${{ vars.JFROG_URL }}" --access-token "${{ steps.exchange-oidc.outputs.token }}"
-          jf c show
-
-      - name: "[Setup] Verify JFrog Authentication"
-        run: |
-          echo "🔐 Verifying JFrog CLI authentication and connectivity..."
-          jf rt ping
-          echo "✅ JFrog authentication successful"
+      # Note: Platform aggregator uses AppTrust API directly, no JFrog CLI needed
 
       - name: "[Auto-Promote] Through Stages to STAGING"
         env:

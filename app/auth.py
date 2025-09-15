@@ -5,7 +5,6 @@ Provides secure JWT token validation using OIDC/OAuth2 standards.
 Supports both development and production configurations.
 """
 
-import logging
 import os
 from typing import Optional
 from datetime import datetime
@@ -13,9 +12,10 @@ from datetime import datetime
 from fastapi import HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from bookverse_core.auth import AuthUser, validate_jwt_token
+from bookverse_core.utils import get_logger
 import requests
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Configuration
 OIDC_AUTHORITY = os.getenv("OIDC_AUTHORITY", "https://dev-auth.bookverse.com")

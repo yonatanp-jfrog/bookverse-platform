@@ -8,7 +8,6 @@ This module handles the automatic tagging logic to ensure:
 """
 
 import os
-import logging
 from typing import Dict, List, Optional, Any
 from urllib.parse import quote
 
@@ -16,12 +15,14 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 import httpx
 
+# Import shared libraries
+from bookverse_core.utils import get_logger
+
 # Import authentication module
 from . import auth
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Use shared logging
+logger = get_logger(__name__)
 
 app = FastAPI(title="BookVerse Platform Tagging System")
 

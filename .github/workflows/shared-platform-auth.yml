@@ -1,0 +1,178 @@
+name: "Platform OIDC Authentication"
+
+# Reusable workflow for platform-specific OIDC authentication
+# Optimized for platform aggregation and AppTrust API calls
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        description: 'Service name for OIDC provider identification'
+        required: false
+        type: string
+        default: 'platform'
+      provider-name:
+        description: 'OIDC provider name in JFrog'
+        required: false
+        type: string
+        default: 'bookverse-platform-github'
+      setup-python:
+        description: 'Setup Python environment'
+        required: false
+        type: boolean
+        default: true
+      python-version:
+        description: 'Python version to setup'
+        required: false
+        type: string
+        default: '3.11'
+      install-dependencies:
+        description: 'Install Python dependencies from requirements.txt'
+        required: false
+        type: boolean
+        default: true
+      setup-apptrust:
+        description: 'Setup AppTrust environment variables'
+        required: false
+        type: boolean
+        default: true
+    outputs:
+      auth-status:
+        description: 'Authentication status (success|failed)'
+        value: ${{ jobs.authenticate.outputs.auth_status }}
+      oidc-token:
+        description: 'OIDC token for API calls'
+        value: ${{ jobs.authenticate.outputs.oidc_token }}
+      apptrust-base-url:
+        description: 'AppTrust API base URL'
+        value: ${{ jobs.authenticate.outputs.apptrust_base_url }}
+
+jobs:
+  authenticate:
+    name: "🔐 Platform Authentication"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    
+    outputs:
+      auth_status: ${{ steps.auth-result.outputs.status }}
+      oidc_token: ${{ steps.oidc-exchange.outputs.token }}
+      apptrust_base_url: ${{ steps.setup-apptrust.outputs.base_url }}
+    
+    steps:
+      - name: "[Setup] Checkout"
+        uses: actions/checkout@v4
+
+      - name: "[Setup] Python Environment"
+        if: ${{ inputs.setup-python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: 'pip'
+
+      - name: "[Auth] OIDC → JFrog Token Exchange"
+        id: oidc-exchange
+        env:
+          JF_URL: ${{ vars.JFROG_URL }}
+          PROJECT: ${{ vars.PROJECT_KEY }}
+          PROVIDER_NAME: ${{ inputs.provider-name }}
+        run: |
+          set -euo pipefail
+          
+          echo "🔐 Platform OIDC Authentication for ${{ inputs.service-name }}"
+          echo "🎯 Target JFrog: $JF_URL"
+          echo "🔑 Provider: $PROVIDER_NAME"
+          
+          # Install jq if needed
+          if ! command -v jq >/dev/null 2>&1; then 
+            sudo apt-get update -y && sudo apt-get install -y jq
+          fi
+          
+          # Validate GitHub OIDC environment
+          if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
+            echo "❌ Missing GitHub OIDC request env vars" >&2
+            exit 1
+          fi
+          
+          # Mint GitHub OIDC ID token
+          echo "🔄 Minting GitHub OIDC ID token..."
+          GH_ID_TOKEN=$(curl -sS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${JF_URL}" | jq -r .value)
+          
+          if [[ -z "$GH_ID_TOKEN" || "$GH_ID_TOKEN" == "null" ]]; then 
+            echo "❌ Failed to fetch GitHub ID token" >&2
+            exit 1
+          fi
+          
+          # Exchange for JFrog access token
+          echo "🔄 Exchanging for JFrog access token..."
+          PAYLOAD=$(jq -n --arg jwt "$GH_ID_TOKEN" \
+            --arg provider_name "$PROVIDER_NAME" \
+            --arg project_key "$PROJECT" \
+            --arg job_id "${{ github.job }}" \
+            --arg run_id "${{ github.run_id }}" \
+            --arg repo "https://github.com/${{ github.repository }}" \
+            --arg revision "${{ github.sha }}" \
+            --arg branch "${{ github.ref_name }}" \
+            '{
+              grant_type:"urn:ietf:params:oauth:grant-type:token-exchange",
+              subject_token_type:"urn:ietf:params:oauth:token-type:id_token",
+              subject_token:$jwt,
+              provider_name:$provider_name,
+              project_key:$project_key,
+              job_id:$job_id,
+              run_id:$run_id,
+              repo:$repo,
+              revision:$revision,
+              branch:$branch
+            }')
+          
+          TOKEN=$(curl -sS -X POST -H "Content-Type: application/json" -d "$PAYLOAD" \
+            "$JF_URL/access/api/v1/oidc/token" | jq -r .access_token)
+          
+          if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then 
+            echo "❌ Failed to exchange OIDC token" >&2
+            exit 1
+          fi
+          
+          # Export token for subsequent steps
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+          echo "JF_OIDC_TOKEN=$TOKEN" >> $GITHUB_ENV
+          echo "✅ OIDC authentication successful"
+
+      - name: "[Setup] AppTrust Environment"
+        id: setup-apptrust
+        if: ${{ inputs.setup-apptrust }}
+        run: |
+          BASE="${{ vars.JFROG_URL }}"
+          BASE="${BASE%/}"
+          APPTRUST_URL="${BASE}/apptrust/api/v1"
+          echo "APPTRUST_BASE_URL=$APPTRUST_URL" >> "$GITHUB_ENV"
+          echo "APPTRUST_ACCESS_TOKEN=${{ steps.oidc-exchange.outputs.token }}" >> "$GITHUB_ENV"
+          echo "base_url=$APPTRUST_URL" >> $GITHUB_OUTPUT
+          echo "✅ AppTrust environment configured"
+
+      - name: "[Setup] Install Dependencies"
+        if: ${{ inputs.install-dependencies }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          echo "✅ Dependencies installed"
+
+      - name: "[Verify] Authentication Status"
+        id: auth-result
+        run: |
+          echo "🔍 Verifying authentication for platform operations..."
+          
+          # Test basic JFrog connectivity if we have credentials
+          if [[ -n "${JF_OIDC_TOKEN:-}" ]]; then
+            echo "✅ OIDC token available for API calls"
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ No OIDC token available"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          echo "🎉 Platform authentication setup complete"

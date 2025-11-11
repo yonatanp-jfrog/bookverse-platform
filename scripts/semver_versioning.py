@@ -462,7 +462,7 @@ def main():
         python semver_versioning.py \
             --application-key bookverse-inventory \
             --version-map version-map.yml \
-            --jfrog-url https://apptrusttraining1.jfrog.io \
+            --jfrog-url https://swampupsec.jfrog.io \
             --jfrog-token $JFROG_TOKEN
         ```
         
@@ -471,7 +471,7 @@ def main():
         python semver_versioning.py \
             --application-key bookverse-inventory \
             --version-map version-map.yml \
-            --jfrog-url https://apptrusttraining1.jfrog.io \
+            --jfrog-url https://swampupsec.jfrog.io \
             --jfrog-token $JFROG_TOKEN \
             --packages "inventory-service,inventory-worker" \
             --project-key bookverse

@@ -18,7 +18,7 @@ class TestPlatformE2E(unittest.TestCase):
             'OIDC_AUDIENCE': 'bookverse:api:test',
             'AUTH_ENABLED': 'false',
             'DEVELOPMENT_MODE': 'true',
-            'JFROG_URL': 'https://apptrusttraining1.jfrog.io',
+            'JFROG_URL': 'https://swampupsec.jfrog.io',
             'JF_OIDC_TOKEN': 'test-oidc-token-123'
         }
     
@@ -146,7 +146,7 @@ class TestPlatformE2E(unittest.TestCase):
                 from app.main import AppTrustClient
                 
                 client = AppTrustClient(
-                    base_url='https://apptrusttraining1.jfrog.io/apptrust/api/v1',
+                    base_url='https://swampupsec.jfrog.io/apptrust/api/v1',
                     token='test-token'
                 )
                 self.assertIsNotNone(client)

@@ -396,7 +396,7 @@ class AppTrustClient:
         ```python
         # Initialize client with AppTrust credentials
         client = AppTrustClient(
-            base_url="https://swampupsec.jfrog.io/apptrust/api/v1",
+            base_url="https://apptrusttraining1.jfrog.io/apptrust/api/v1",
             token="bearer-token-here",
             timeout_seconds=300
         )
@@ -422,7 +422,7 @@ class AppTrustClient:
         Initialize AppTrust client with connection parameters.
         
         Args:
-            base_url (str): Base URL for AppTrust API (e.g., https://swampupsec.jfrog.io/apptrust/api/v1)
+            base_url (str): Base URL for AppTrust API (e.g., https://apptrusttraining1.jfrog.io/apptrust/api/v1)
             token (str): Bearer token for API authentication
             timeout_seconds (int): Request timeout in seconds (default: 600)
         """

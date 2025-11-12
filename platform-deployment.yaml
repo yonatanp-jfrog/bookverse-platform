@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
       - name: platform-aggregator
-        image: swampupsec.jfrog.io/${PROJECT_KEY:-bookverse}-platform-internal-docker-release-local/platform:latest
+        image: apptrusttraining1.jfrog.io/${PROJECT_KEY:-bookverse}-platform-internal-docker-release-local/platform:latest
         imagePullPolicy: IfNotPresent
         command: ["./entrypoint.sh", "aggregator"]
         env:
@@ -34,7 +34,7 @@ spec:
         - name: DEVELOPMENT_MODE
           value: "false"
         - name: JFROG_URL
-          value: "https://swampupsec.jfrog.io"
+          value: "https://apptrusttraining1.jfrog.io"
         - name: PLATFORM_APP_KEY
           value: "${PROJECT_KEY:-bookverse}-platform"
         resources:

@@ -13,7 +13,7 @@ class TestPlatformAggregator(unittest.TestCase):
     
     def setUp(self):
         self.test_env = {
-            'JFROG_URL': 'https://swampupsec.jfrog.io',
+            'JFROG_URL': 'https://apptrusttraining1.jfrog.io',
             'JF_OIDC_TOKEN': 'test-oidc-token-123'
         }
         self.mock_services_config = [
